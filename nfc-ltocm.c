@@ -17,6 +17,8 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include <getopt.h>
+
 #include <nfc/nfc.h>
 
 #include "nfc-ltocm.h"
@@ -211,7 +213,18 @@ int main(int argc, char **argv)
 	}
 
 	// Try to open the NFC reader
-	pnd = nfc_open(context, NULL);
+        int initialised = 0;
+        int opt;
+	while ((opt = getopt(argc, argv, "d:")) != -1) {
+                switch (opt) {
+                        case 'd':
+                                pnd = nfc_open(context, optarg);
+                                initialised = 1;
+                                break;
+                }
+        }
+        if (!initialised)
+	        pnd = nfc_open(context, NULL);
 
 	if (pnd == NULL) {
 		ERR("Error opening NFC reader");
@@ -342,14 +355,21 @@ int main(int argc, char **argv)
 	// Read all blocks in the chip
 	printf("Reading LTO-CM data to file\n");
 
+        FILE *fp = NULL;
 	char *p_filename;
-	if (argc == 1) {
+	if (optind == argc) {
 		p_filename = &default_filename[0];
+	        fp = fopen(p_filename, "wb");
 	} else {
-		p_filename = argv[1];
+		p_filename = argv[optind];
+
+                if (p_filename[0] == '-') {
+                        fp = stdout;
+                } else {
+	                fp = fopen(p_filename, "wb");
+                }
 	}
 
-	FILE *fp = fopen(p_filename, "wb");
 	if (!fp) {
 		printf("Error: cannot open output file '%s'\n", argv[1]);
 		returncode = EXIT_FAILURE;
@@ -426,8 +446,9 @@ int main(int argc, char **argv)
 		fwrite(blockBuf, 1, sizeof(blockBuf), fp);
 	}
 
-	fclose(fp);
-
+        if (p_filename[0] != '-') {
+	        fclose(fp);
+        }
 
 err_exit:
 	nfc_close(pnd);
