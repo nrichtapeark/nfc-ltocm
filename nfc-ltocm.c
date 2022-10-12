@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include <getopt.h>
+#include <stdarg.h>
 
 #include <nfc/nfc.h>
 
@@ -40,6 +41,7 @@ static int szRxBytes;
 /// NFC device handle
 static nfc_device *pnd;
 
+static int log_to_stderr = 0;
 
 /***
  * LTO-CM commands
@@ -70,6 +72,12 @@ const uint8_t LTOCM_NACK = 0x05;
  * Utility functions
  ***/
 
+static int log_printf(const char *format, ...) {
+    va_list(args);
+    va_start(args, format);
+    return vfprintf(log_to_stderr ? stderr : stdout, format, args);
+}
+
 /**
  * Transmit bits over NFC and read the response.
  *
@@ -84,7 +92,7 @@ static bool transmit_bits(const uint8_t *pbtTx, const size_t szTxBits)
 {
 	// Show transmitted command
 	if (!quiet_output) {
-		printf("Sent bits:     ");
+		log_printf("Sent bits:     ");
 		print_hex_bits(pbtTx, szTxBits);
 	}
 	// Transmit the bit frame command, we don't use the arbitrary parity feature
@@ -93,7 +101,7 @@ static bool transmit_bits(const uint8_t *pbtTx, const size_t szTxBits)
 
 	// Show received answer
 	if (!quiet_output) {
-		printf("Received bits: ");
+		log_printf("Received bits: ");
 		print_hex_bits(abtRx, szRxBits);
 	}
 	// Succesful transfer
@@ -116,7 +124,7 @@ static bool transmit_bytes(const uint8_t *pbtTx, const size_t szTx)
 {
 	// Show transmitted command
 	if (!quiet_output) {
-		printf("Sent bits:     ");
+		log_printf("Sent bits:     ");
 		print_hex(pbtTx, szTx);
 	}
 
@@ -126,7 +134,7 @@ static bool transmit_bytes(const uint8_t *pbtTx, const size_t szTx)
 
 	// Show received answer
 	if (!quiet_output) {
-		printf("Received bits: ");
+		log_printf("Received bits: ");
 		print_hex(abtRx, szRxBytes);
 	}
 
@@ -258,18 +266,24 @@ int main(int argc, char **argv)
 		goto err_exit;
 	}
 
-	printf("NFC reader: %s opened\n", nfc_device_get_name(pnd));
+	if (optind != argc) {
+		char *p_filename = argv[optind];
+                if (p_filename[0] == '-') {
+                        log_to_stderr = 1;
+                }
+        }
 
+	log_printf("NFC reader: %s opened\n", nfc_device_get_name(pnd));
 
 	// Send LTO-CM REQUEST STANDARD
 	//   (LTO-CM state transition INIT -> PRESELECT)
 	uint8_t ltoStandard[2];
 	if (!ltocm_req_std(&ltoStandard[0])) {
-		printf("Error: error with LTOCM REQUEST STANDARD, no tag present?\n");
+		log_printf("Error: error with LTOCM REQUEST STANDARD, no tag present?\n");
 		returncode = EXIT_FAILURE;
 		goto err_exit;
 	}
-	printf("LTO REQUEST STANDARD: %02X %02X\n", ltoStandard[0], ltoStandard[1]);
+	log_printf("LTO REQUEST STANDARD: %02X %02X\n", ltoStandard[0], ltoStandard[1]);
 
 	size_t numLTOCMBlocks = 0;
 
@@ -299,7 +313,7 @@ int main(int argc, char **argv)
 			numLTOCMBlocks = 255;
 			break;
 		default:
-			printf("Error: unknown LTO-CM memory type %04X\n", ltoCMStandard);
+			log_printf("Error: unknown LTO-CM memory type %04X\n", ltoCMStandard);
 			returncode = EXIT_FAILURE;
 			goto err_exit;
 	}
@@ -310,17 +324,17 @@ int main(int argc, char **argv)
 	uint8_t serialNum[5];
 	int serialNumLen = 0;
 	if (!ltocm_req_serial(&serialNum[0], &serialNumLen)) {
-		printf("Error: error with REQUEST SERIAL NUMBER command.\n");
+		log_printf("Error: error with REQUEST SERIAL NUMBER command.\n");
 		returncode = EXIT_FAILURE;
 		goto err_exit;
 	}
 
 	if (serialNumLen < 5) {
-		printf("Error: REQUEST SERIAL NUMBER returned too few bytes.\n");
+		log_printf("Error: REQUEST SERIAL NUMBER returned too few bytes.\n");
 		returncode = EXIT_FAILURE;
 		goto err_exit;
 	}
-	printf("Found LTO-CM tag with s/n %02X:%02X:%02X:%02X:%02X\n",
+	log_printf("Found LTO-CM tag with s/n %02X:%02X:%02X:%02X:%02X\n",
 			serialNum[0], serialNum[1], serialNum[2], serialNum[3], serialNum[4]);
 	char default_filename[13];
 	sprintf(default_filename, "%02X%02X%02X%02X.bin", serialNum[0], serialNum[1], serialNum[2], serialNum[3]);
@@ -328,7 +342,7 @@ int main(int argc, char **argv)
 	// Check the serial number's validity
 	uint8_t ltosnCheck = serialNum[0] ^ serialNum[1] ^ serialNum[2] ^ serialNum[3];
 	if (ltosnCheck != serialNum[4]) {
-		printf("Error: REQUEST SERIAL NUMBER returned an invalid serial number.\n");
+		log_printf("Error: REQUEST SERIAL NUMBER returned an invalid serial number.\n");
 		returncode = EXIT_FAILURE;
 		goto err_exit;
 	}
@@ -338,23 +352,19 @@ int main(int argc, char **argv)
 	uint8_t retSelect;
 	int retLenSelect;
 	if (!ltocm_select(&serialNum[0], &retSelect, &retLenSelect)) {
-		printf("Error: error with SELECT command\n");
+		log_printf("Error: error with SELECT command\n");
 		returncode = EXIT_FAILURE;
 		goto err_exit;
 	}
 
 	// Check that the LTO-CM chip sent us an acknowledgement
 	if ((retLenSelect != 1) || (retSelect != LTOCM_ACK)) {
-		printf("Error: Failed to SELECT the LTO-CM chip\n");
+		log_printf("Error: Failed to SELECT the LTO-CM chip\n");
 		returncode = EXIT_FAILURE;
 		goto err_exit;
 	}
 
 	// Chip is now in the LTO-CM COMMAND state, we should be able to read it
-
-	// Read all blocks in the chip
-	printf("Reading LTO-CM data to file\n");
-
         FILE *fp = NULL;
 	char *p_filename;
 	if (optind == argc) {
@@ -365,16 +375,20 @@ int main(int argc, char **argv)
 
                 if (p_filename[0] == '-') {
                         fp = stdout;
+                        log_to_stderr = 1;
                 } else {
 	                fp = fopen(p_filename, "wb");
                 }
 	}
 
 	if (!fp) {
-		printf("Error: cannot open output file '%s'\n", argv[1]);
+		log_printf("Error: cannot open output file '%s'\n", argv[1]);
 		returncode = EXIT_FAILURE;
 		goto err_exit;
 	}
+
+	// Read all blocks in the chip
+	log_printf("Reading LTO-CM data to file\n");
 
 	uint8_t blockBuf[32];
 	uint8_t crcBlock[2];
@@ -385,18 +399,18 @@ int main(int argc, char **argv)
 
 		// read the first half of the block
 		if (!ltocm_readblk(block, &retReadBlk[0], &retLenReadBlk)) {
-			printf("Error: error with READ BLOCK command, block=%zu of %zu\n", block, numLTOCMBlocks-1);
+			log_printf("Error: error with READ BLOCK command, block=%zu of %zu\n", block, numLTOCMBlocks-1);
 			returncode = EXIT_FAILURE;
 			goto err_exit;
 		}
 
 		// check the byte count and response bytes
 		if ((retLenReadBlk == 1) && (retReadBlk[0] == LTOCM_NACK)) {
-			printf("Error: READ BLOCK %zu (of %zu) failed, NACK\n", block, numLTOCMBlocks-1);
+			log_printf("Error: READ BLOCK %zu (of %zu) failed, NACK\n", block, numLTOCMBlocks-1);
 			returncode = EXIT_FAILURE;
 			goto err_exit;
 		} else if (retLenReadBlk != 18) {
-			printf("Error: READ BLOCK %zu (of %zu) failed, insufficient response bytes\n", block, numLTOCMBlocks-1);
+			log_printf("Error: READ BLOCK %zu (of %zu) failed, insufficient response bytes\n", block, numLTOCMBlocks-1);
 			returncode = EXIT_FAILURE;
 			goto err_exit;
 		}
@@ -404,7 +418,7 @@ int main(int argc, char **argv)
 		// check the CRC
 		iso14443a_crc(retReadBlk, 16, crcBlock);
 		if (memcmp(&retReadBlk[16], crcBlock, 2) != 0) {
-			printf("Error: READ BLOCK %zu (of %zu) failed, CRC error\n", block, numLTOCMBlocks-1);
+			log_printf("Error: READ BLOCK %zu (of %zu) failed, CRC error\n", block, numLTOCMBlocks-1);
 			returncode = EXIT_FAILURE;
 			goto err_exit;
 		}
@@ -415,18 +429,18 @@ int main(int argc, char **argv)
 
 		// read the second half of the block
 		if (!ltocm_readblkcnt(&retReadBlk[0], &retLenReadBlk)) {
-			printf("Error: error with READ BLOCK CONTINUE command, block=%zu\n", block);
+			log_printf("Error: error with READ BLOCK CONTINUE command, block=%zu\n", block);
 			returncode = EXIT_FAILURE;
 			goto err_exit;
 		}
 
 		// check the byte count and response bytes
 		if ((retLenReadBlk == 1) && (retReadBlk[0] == LTOCM_NACK)) {
-			printf("Error: READ BLOCK %zu (of %zu) failed, NACK\n", block, numLTOCMBlocks-1);
+			log_printf("Error: READ BLOCK %zu (of %zu) failed, NACK\n", block, numLTOCMBlocks-1);
 			returncode = EXIT_FAILURE;
 			goto err_exit;
 		} else if (retLenReadBlk != 18) {
-			printf("Error: READ BLOCK %zu (of %zu) failed, insufficient response bytes\n", block, numLTOCMBlocks-1);
+			log_printf("Error: READ BLOCK %zu (of %zu) failed, insufficient response bytes\n", block, numLTOCMBlocks-1);
 			returncode = EXIT_FAILURE;
 			goto err_exit;
 		}
@@ -434,7 +448,7 @@ int main(int argc, char **argv)
 		// check the CRC
 		iso14443a_crc(retReadBlk, 16, crcBlock);
 		if (memcmp(&retReadBlk[16], crcBlock, 2) != 0) {
-			printf("Error: READ BLOCK %zu (of %zu) failed, CRC error\n", block, numLTOCMBlocks-1);
+			log_printf("Error: READ BLOCK %zu (of %zu) failed, CRC error\n", block, numLTOCMBlocks-1);
 			returncode = EXIT_FAILURE;
 			goto err_exit;
 		}
